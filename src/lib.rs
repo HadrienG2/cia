@@ -168,11 +168,11 @@ impl<'a, T> Allocation<'a, T> {
         (self.allocator, self.index)
     }
 
-    // ...but going back to the Allocation abstraction after that is unsafe,
-    // because we have no way to check that the (allocator, index) pair which
-    // you give back is the same that you received from us. And if it's not,
-    // a data race disaster will likely ensue.
-    //
+    /// ...but going back to the Allocation abstraction after that is unsafe,
+    /// because we have no way to check that the (allocator, index) pair which
+    /// you give back is the same that you received from us. And if it's not,
+    /// a data race disaster will likely ensue.
+    ///
     pub unsafe fn from_raw(allocator: &'a ConcurrentIndexedAllocator<T>,
                            index: usize) -> Self {
         Self {
