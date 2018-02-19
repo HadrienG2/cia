@@ -54,6 +54,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
+/// I've wanted a utility function like this since... forever.
 fn new_boxed_slice<F, T>(mut generator: F, size: usize) -> Box<[T]>
     where F: FnMut() -> T
 {
@@ -65,14 +66,23 @@ fn new_boxed_slice<F, T>(mut generator: F, size: usize) -> Box<[T]>
 }
 
 
+/// This is an implementation of the concurrent indexed allocator concept
 pub struct ConcurrentIndexedAllocator<T> {
+    /// Flags telling whether each of the data blocks is in use
     in_use: Box<[AtomicBool]>,
+
+    /// The data blocks themselves, with matching indices
     data: Box<[UnsafeCell<T>]>,
+
+    /// Suggestion for the client of the next data block to be tried. Must be
+    /// incremented via fetch-add on every read to remain a good suggestion.
+    /// Value must be wrapped around modulo data.len() to make any sense.
     next_index: AtomicUsize,
 }
 
 impl<T: Default> ConcurrentIndexedAllocator<T> {
-    fn new(size: usize) -> Self {
+    /// Constructor for default-constructible types
+    pub fn new(size: usize) -> Self {
         Self {
             in_use: new_boxed_slice(|| AtomicBool::new(false), size),
             data: new_boxed_slice(|| UnsafeCell::new(T::default()), size),
@@ -82,31 +92,46 @@ impl<T: Default> ConcurrentIndexedAllocator<T> {
 }
 
 impl<T> ConcurrentIndexedAllocator<T> {
-    fn allocate<'a>(&'a self) -> Option<Allocation<'a, T>> {
-        // Look for an unused allocation, allowing a full storage scan
-        for _ in 0..self.data.len() {
-            let i = self.next_index.fetch_add(1, Ordering::Relaxed);
+    /// Attempt to allocate a new indexed data block
+    pub fn allocate<'a>(&'a self) -> Option<Allocation<'a, T>> {
+        // Look for an unused data block, allowing for a full storage scan
+        // before giving up and bailing
+        let size = self.data.len();
+        for _ in 0..size {
+            // Get a suggestion of a data block to try out next
+            let i = self.next_index.fetch_add(1, Ordering::Relaxed) % size;
+
+            // If that data block is free, reserve it and return it. Need an
+            // Acquire memory barrier for the data to be consistent when
+            // receiving a concurrently deallocated data block.
             if self.in_use[i].swap(true, Ordering::Acquire) == false {
                 return Some(Allocation { allocator: self, index: i });
             }
         }
 
-        // Too many attempts, storage is likely full
+        // Too many failed attempts to allocate, storage is likely full
         None
     }
 
-    // Make sure that you target the right index when calling this method...
+    /// Deallocating by index is unsafe, because it can cause a data race if the
+    /// wrong data block is accidentally liberated. In any case, we recommend
+    /// that you liberate the data via the Allocation RAII interface.
     unsafe fn deallocate(&self, index: usize) {
         self.in_use[index].store(false, Ordering::Release);
     }
 }
 
 
+/// Proxy object representing a successfully allocated data block
 pub struct Allocation<'a, T: 'a> {
+    /// Allocator which we got the data from
     allocator: &'a ConcurrentIndexedAllocator<T>,
+
+    /// Index of the data within the allocator
     index: usize,
 }
 
+// Data can be accessed via the usual Deref/DerefMut smart pointer interface...
 impl<'a, T> Deref for Allocation<'a, T> {
     type Target = T;
 
@@ -115,7 +140,7 @@ impl<'a, T> Deref for Allocation<'a, T> {
         unsafe { & *target_ptr }
     }
 }
-
+//
 impl<'a, T> DerefMut for Allocation<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         let target_ptr = self.allocator.data[self.index].get();
@@ -123,6 +148,7 @@ impl<'a, T> DerefMut for Allocation<'a, T> {
     }
 }
 
+// ...and will be automatically liberated on drop in the usual RAII way.
 impl<'a, T> Drop for Allocation<'a, T> {
     fn drop(&mut self) {
         // This is safe because we trust that the inner index is valid
@@ -131,16 +157,24 @@ impl<'a, T> Drop for Allocation<'a, T> {
 }
 
 impl<'a, T> Allocation<'a, T> {
-    // This is a lossy conversion. We know that the allocation index which you
-    // will get here is valid...
-    fn into_raw(self) -> (&'a ConcurrentIndexedAllocator<T>, usize) {
+    /// The ability to extract the index of the allocation is a critical part of
+    /// this abstraction. It is what allows an allocation to be used in
+    /// space-contrained scenarios, such as within the NaN bits of a float.
+    ///
+    /// However, this is a lossy operation. Converting to an allocator + index
+    /// is safe to do, as it's just exposing information to the outside world...
+    ///
+    pub fn into_raw(self) -> (&'a ConcurrentIndexedAllocator<T>, usize) {
         (self.allocator, self.index)
     }
 
-    // ...but we rely on your care for passing back a matching
-    // (allocator, index) pair to this fn, or else disaster will ensue.
-    unsafe fn from_raw(allocator: &'a ConcurrentIndexedAllocator<T>,
-                       index: usize) -> Self {
+    // ...but going back to the Allocation abstraction after that is unsafe,
+    // because we have no way to check that the (allocator, index) pair which
+    // you give back is the same that you received from us. And if it's not,
+    // a data race disaster will likely ensue.
+    //
+    pub unsafe fn from_raw(allocator: &'a ConcurrentIndexedAllocator<T>,
+                           index: usize) -> Self {
         Self {
             allocator,
             index
