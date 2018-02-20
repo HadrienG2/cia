@@ -51,6 +51,7 @@
 
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
+use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -191,7 +192,9 @@ impl<'a, T> Allocation<'a, T> {
     /// is safe to do, as it's just exposing information to the outside world...
     ///
     pub fn into_raw(self) -> (&'a ConcurrentIndexedAllocator<T>, usize) {
-        (self.allocator, self.index)
+        let result = (self.allocator, self.index);
+        mem::forget(self);
+        result
     }
 
     /// ...but going back to the Allocation abstraction after that is unsafe,
@@ -258,5 +261,17 @@ mod tests {
             assert_eq!(allocator.allocate(), None);
         }
         assert!(allocator.allocate().is_some());
+    }
+
+    /// Check that we can destructure an Allocation, then put it back together,
+    /// without it being freed by the allocator.
+    #[test]
+    fn split_and_merge() {
+        let allocator = ConcurrentIndexedAllocator::<&str>::new(1);
+        let allocation = allocator.allocate().expect("Should succeed");
+        let (_, index) = allocation.into_raw();
+        assert_eq!(allocator.allocate(), None);
+        let _allocation = unsafe { Allocation::from_raw(&allocator, index) };
+        assert_eq!(allocator.allocate(), None);
     }
 }
