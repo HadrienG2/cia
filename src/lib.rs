@@ -92,7 +92,10 @@ impl<T: Default> ConcurrentIndexedAllocator<T> {
 }
 
 impl<T> ConcurrentIndexedAllocator<T> {
-    /// Attempt to allocate a new indexed data block
+    /// Attempt to allocate a new indexed data block. The data block is provided
+    /// to you in the state where the last client left it: you can only assume
+    /// that it is a valid value of type T, and if you need more cleanup you
+    /// will have to do it yourself.
     pub fn allocate<'a>(&'a self) -> Option<Allocation<'a, T>> {
         // Look for an unused data block, allowing for a full storage scan
         // before giving up and bailing
@@ -198,6 +201,7 @@ impl<'a, T> Allocation<'a, T> {
 mod tests {
     use super::*;
 
+    /// Check that allocators are created in a correct state
     #[test]
     fn new() {
         let allocator = ConcurrentIndexedAllocator::<u8>::new(42);
