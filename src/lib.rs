@@ -248,4 +248,15 @@ mod tests {
         *allocation = '@';
         assert_eq!(*allocation, '@');
     }
+
+    /// Check that we can deallocate data by dropping the Allocation
+    #[test]
+    fn deallocate() {
+        let allocator = ConcurrentIndexedAllocator::<isize>::new(1);
+        {
+            let _allocation = allocator.allocate().expect("Should succeed");
+            assert_eq!(allocator.allocate(), None);
+        }
+        assert!(allocator.allocate().is_some());
+    }
 }
