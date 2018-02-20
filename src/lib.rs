@@ -49,6 +49,8 @@
 //! I will initially go with the atomic counter, as that seems generally better,
 //! and then try the alternate strategy to see if it handles contention better.
 
+extern crate testbench;
+
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::mem;
@@ -138,6 +140,8 @@ impl<T> ConcurrentIndexedAllocator<T> {
     }
 }
 
+unsafe impl<T> Sync for ConcurrentIndexedAllocator<T> {}
+
 
 /// Proxy object representing a successfully allocated data block
 #[derive(Debug)]
@@ -216,8 +220,11 @@ impl<'a, T> Allocation<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::mem::ManuallyDrop;
+    use std::sync::{Arc, Mutex};
     use super::*;
+    use testbench;
 
 
     /// Check that allocators are created in a correct state
@@ -303,5 +310,53 @@ mod tests {
         assert_eq!(allocator.allocate(), None);
         let _allocation = unsafe { Allocation::from_raw(alloc, index) };
         assert_eq!(allocator.allocate(), None);
+    }
+
+    /// Run two threads in parallel, allocating data until the capacity of the
+    /// allocator is exhausted. Then check if the allocation pattern was correct
+    #[test]
+    fn concurrent_alloc() {
+        // We will allocate LOTS of booleans
+        const CAPACITY: usize = 40_000_000;
+        type BoolAllocator = ConcurrentIndexedAllocator<bool>;
+        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
+        let allocator2 = allocator.clone();
+        let allocator3 = allocator.clone();
+
+        // We will then later collect the index of the allocations into shared
+        // storage for analysis
+        let indices = Arc::new(Mutex::new(HashSet::with_capacity(CAPACITY)));
+        let indices2 = indices.clone();
+        let indices3 = indices.clone();
+
+        // Here is what each thread will do
+        fn worker(allocator: Arc<BoolAllocator>,
+                  indices: Arc<Mutex<HashSet<usize>>>) {
+            // Allocate local storage for indices
+            let mut local_indices = Vec::with_capacity(CAPACITY/2);
+
+            // As long as allocation succeeeds, record the allocated index
+            while let Some(allocation) = allocator.allocate() {
+                let (_, index) = allocation.into_raw();
+                local_indices.push(index);
+            }
+
+            // At the end, check that the observed indices were never observed
+            // before globally, and collect them for the other thread
+            let mut global_indices = indices.lock().unwrap();
+            for index in local_indices {
+                assert!(global_indices.insert(index));
+            }
+        }
+
+        // Run both threads to completion
+        testbench::concurrent_test_2(move || worker(allocator, indices),
+                                     move || worker(allocator2, indices2));
+
+        // At the end, allocation should fail...
+        assert_eq!(allocator3.allocate(), None);
+
+        // ...and CAPACITY distinct indices should have been recorded
+        assert_eq!(indices3.lock().unwrap().len(), CAPACITY);
     }
 }
