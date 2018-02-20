@@ -113,6 +113,16 @@ impl<T> ConcurrentIndexedAllocator<T> {
         None
     }
 
+    /// Access indexed data. We trust you to reach for the right one...
+    unsafe fn get(&self, index: usize) -> &T {
+        & *self.data[index].get()
+    }
+
+    /// Mutably access indexed data. We trust you to reach for the right one...
+    unsafe fn get_mut(&self, index: usize) -> &mut T {
+        &mut *self.data[index].get()
+    }
+
     /// Deallocating by index is unsafe, because it can cause a data race if the
     /// wrong data block is accidentally liberated. In any case, we recommend
     /// that you liberate the data via the Allocation RAII interface.
@@ -136,15 +146,13 @@ impl<'a, T> Deref for Allocation<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        let target_ptr = self.allocator.data[self.index].get();
-        unsafe { & *target_ptr }
+        unsafe { self.allocator.get(self.index) }
     }
 }
 //
 impl<'a, T> DerefMut for Allocation<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let target_ptr = self.allocator.data[self.index].get();
-        unsafe { &mut *target_ptr }
+        unsafe { self.allocator.get_mut(self.index) }
     }
 }
 
