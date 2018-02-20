@@ -214,7 +214,6 @@ impl<'a, T> Allocation<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
 
     /// Check that allocators are created in a correct state
@@ -232,12 +231,10 @@ mod tests {
         const CAPACITY: usize = 15;
         let allocator = ConcurrentIndexedAllocator::<f64>::new(CAPACITY);
         let mut allocations = Vec::with_capacity(CAPACITY);
-        let mut indices = HashSet::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
             let allocation = allocator.allocate().expect("Should succeed");
             assert!(ptr::eq(&allocator, allocation.allocator));
-            assert!(!indices.contains(&allocation.index));
-            indices.insert(allocation.index);
+            assert!(!allocations.contains(&allocation));
             allocations.push(allocation);
         }
         assert_eq!(allocator.allocate(), None);
