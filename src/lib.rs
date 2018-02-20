@@ -298,9 +298,10 @@ mod tests {
     fn split_and_merge() {
         let allocator = ConcurrentIndexedAllocator::<&str>::new(1);
         let allocation = allocator.allocate().unwrap();
-        let (_, index) = allocation.into_raw();
+        let (alloc, index) = allocation.into_raw();
+        assert!(ptr::eq(alloc, &allocator));
         assert_eq!(allocator.allocate(), None);
-        let _allocation = unsafe { Allocation::from_raw(&allocator, index) };
+        let _allocation = unsafe { Allocation::from_raw(alloc, index) };
         assert_eq!(allocator.allocate(), None);
     }
 }
