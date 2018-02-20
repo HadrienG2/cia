@@ -99,13 +99,13 @@ impl<T> ConcurrentIndexedAllocator<T> {
         let size = self.data.len();
         for _ in 0..size {
             // Get a suggestion of a data block to try out next
-            let i = self.next_index.fetch_add(1, Ordering::Relaxed) % size;
+            let index = self.next_index.fetch_add(1, Ordering::Relaxed) % size;
 
             // If that data block is free, reserve it and return it. Need an
             // Acquire memory barrier for the data to be consistent when
             // receiving a concurrently deallocated data block.
-            if self.in_use[i].swap(true, Ordering::Acquire) == false {
-                return Some(Allocation { allocator: self, index: i });
+            if self.in_use[index].swap(true, Ordering::Acquire) == false {
+                return Some(Allocation { allocator: self, index });
             }
         }
 
@@ -113,19 +113,20 @@ impl<T> ConcurrentIndexedAllocator<T> {
         None
     }
 
-    /// Access indexed data. We trust you to reach for the right one...
+    /// Access indexed data. This is unsafe because using the wrong index can
+    /// cause a data race with another thread concurrently accessing that index
     unsafe fn get(&self, index: usize) -> &T {
         & *self.data[index].get()
     }
 
-    /// Mutably access indexed data. We trust you to reach for the right one...
+    /// Mutably access indexed data. This is unsafe for the same reason that
+    /// the get() method is: badly used, it will cause a data race.
     unsafe fn get_mut(&self, index: usize) -> &mut T {
         &mut *self.data[index].get()
     }
 
     /// Deallocating by index is unsafe, because it can cause a data race if the
-    /// wrong data block is accidentally liberated. In any case, we recommend
-    /// that you liberate the data via the Allocation RAII interface.
+    /// wrong data block is accidentally liberated.
     unsafe fn deallocate(&self, index: usize) {
         self.in_use[index].store(false, Ordering::Release);
     }
@@ -178,8 +179,9 @@ impl<'a, T> Allocation<'a, T> {
 
     /// ...but going back to the Allocation abstraction after that is unsafe,
     /// because we have no way to check that the (allocator, index) pair which
-    /// you give back is the same that you received from us. And if it's not,
-    /// a data race disaster will likely ensue.
+    /// you give back is the same that you received from us, and that you do not
+    /// sneakily attempt to create multiple Allocations from it. If you do this,
+    /// the program will head straight into undefined behaviour territory.
     ///
     pub unsafe fn from_raw(allocator: &'a ConcurrentIndexedAllocator<T>,
                            index: usize) -> Self {
@@ -194,8 +196,13 @@ impl<'a, T> Allocation<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn new() {
+        let allocator = ConcurrentIndexedAllocator::<u8>::new(42);
+        assert_eq!(allocator.in_use.len(), 42);
+        assert!(allocator.in_use.iter().all(|b| !b.load(Ordering::Relaxed)));
+        assert_eq!(allocator.data.len(), 42);
     }
 }
