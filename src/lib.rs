@@ -51,6 +51,7 @@
 
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
@@ -67,6 +68,7 @@ fn new_boxed_slice<F, T>(mut generator: F, size: usize) -> Box<[T]>
 
 
 /// This is an implementation of the concurrent indexed allocator concept
+#[derive(Debug)]
 pub struct ConcurrentIndexedAllocator<T> {
     /// Flags telling whether each of the data blocks is in use
     in_use: Box<[AtomicBool]>,
@@ -137,6 +139,7 @@ impl<T> ConcurrentIndexedAllocator<T> {
 
 
 /// Proxy object representing a successfully allocated data block
+#[derive(Debug)]
 pub struct Allocation<'a, T: 'a> {
     /// Allocator which we got the data from
     allocator: &'a ConcurrentIndexedAllocator<T>,
@@ -167,6 +170,17 @@ impl<'a, T> Drop for Allocation<'a, T> {
         unsafe { self.allocator.deallocate(self.index) };
     }
 }
+
+// Two allocations are equal if they originate from the same allocator and
+// target the same index. As allocations model owned values, this should never
+// happen, and indicates a bug in the allocator.
+impl<'a, T> PartialEq for Allocation<'a, T> {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self.allocator, other.allocator) && (self.index == other.index)
+    }
+}
+//
+impl<'a, T> Eq for Allocation<'a, T> {}
 
 impl<'a, T> Allocation<'a, T> {
     /// The ability to extract the index of the allocation is a critical part of
@@ -200,6 +214,8 @@ impl<'a, T> Allocation<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
 
     /// Check that allocators are created in a correct state
     #[test]
@@ -208,5 +224,22 @@ mod tests {
         assert_eq!(allocator.in_use.len(), 42);
         assert!(allocator.in_use.iter().all(|b| !b.load(Ordering::Relaxed)));
         assert_eq!(allocator.data.len(), 42);
+    }
+
+    /// Check that allocation makes sense in sequential mode
+    #[test]
+    fn allocate() {
+        const CAPACITY: usize = 15;
+        let allocator = ConcurrentIndexedAllocator::<f64>::new(CAPACITY);
+        let mut allocations = Vec::with_capacity(CAPACITY);
+        let mut indices = HashSet::with_capacity(CAPACITY);
+        for _ in 0..CAPACITY {
+            let allocation = allocator.allocate().expect("Should succeed");
+            assert!(ptr::eq(&allocator, allocation.allocator));
+            assert!(!indices.contains(&allocation.index));
+            indices.insert(allocation.index);
+            allocations.push(allocation);
+        }
+        assert_eq!(allocator.allocate(), None);
     }
 }
