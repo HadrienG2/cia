@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(allocator.data.len(), 42);
     }
 
-    /// Check that allocation makes sense in sequential mode
+    /// Check that allocation works in sequential code
     #[test]
     fn allocate() {
         const CAPACITY: usize = 15;
@@ -238,5 +238,14 @@ mod tests {
             allocations.push(allocation);
         }
         assert_eq!(allocator.allocate(), None);
+    }
+
+    /// Check that we can read and write to an allocation
+    #[test]
+    fn read_write() {
+        let allocator = ConcurrentIndexedAllocator::<char>::new(1);
+        let mut allocation = allocator.allocate().expect("Should succeed");
+        *allocation = '@';
+        assert_eq!(*allocation, '@');
     }
 }
