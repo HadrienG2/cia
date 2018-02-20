@@ -216,6 +216,7 @@ impl<'a, T> Allocation<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::ManuallyDrop;
     use super::*;
 
 
@@ -228,15 +229,43 @@ mod tests {
         assert_eq!(allocator.data.len(), 42);
     }
 
-    /// Check that allocation works in sequential code
+    /// Check that basic allocation and Allocation comparison works
+    #[test]
+    fn allocation_eq() {
+        // Perform two allocations and check that the results make sense
+        let allocator = ConcurrentIndexedAllocator::<String>::new(2);
+        let alloc1 = allocator.allocate().unwrap();
+        let alloc2 = allocator.allocate().unwrap();
+        assert!(((alloc1.index == 0) && (alloc2.index == 1)) ||
+                ((alloc1.index == 1) && (alloc2.index == 0)));
+
+        // Check that a third allocation will fail
+        assert_eq!(allocator.allocate(), None);
+
+        // Check the Allocation equality operator. This involves the dangerous
+        // creation of a duplicate allocation, which should never be used and
+        // whose destructor should never be run, as it violates the type's basic
+        // assumptions and can easily cause various undefined behaviour.
+        let alloc1bis = ManuallyDrop::new(
+            unsafe {
+                Allocation::from_raw(&allocator, alloc1.index)
+            }
+        );
+        assert_eq!(alloc1, alloc1);
+        assert_eq!(alloc1, *alloc1bis);
+        assert!(alloc1 != alloc2);
+    }
+
+    /// Do more extensive check of allocation in the sequential case
     #[test]
     fn allocate() {
         const CAPACITY: usize = 15;
         let allocator = ConcurrentIndexedAllocator::<f64>::new(CAPACITY);
         let mut allocations = Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
-            let allocation = allocator.allocate().expect("Should succeed");
+            let allocation = allocator.allocate().unwrap();
             assert!(ptr::eq(&allocator, allocation.allocator));
+            assert!(allocation.index < CAPACITY);
             assert!(!allocations.contains(&allocation));
             allocations.push(allocation);
         }
@@ -247,7 +276,7 @@ mod tests {
     #[test]
     fn read_write() {
         let allocator = ConcurrentIndexedAllocator::<char>::new(1);
-        let mut allocation = allocator.allocate().expect("Should succeed");
+        let mut allocation = allocator.allocate().unwrap();
         *allocation = '@';
         assert_eq!(*allocation, '@');
     }
@@ -257,7 +286,7 @@ mod tests {
     fn deallocate() {
         let allocator = ConcurrentIndexedAllocator::<isize>::new(1);
         {
-            let _allocation = allocator.allocate().expect("Should succeed");
+            let _allocation = allocator.allocate().unwrap();
             assert_eq!(allocator.allocate(), None);
         }
         assert!(allocator.allocate().is_some());
@@ -268,7 +297,7 @@ mod tests {
     #[test]
     fn split_and_merge() {
         let allocator = ConcurrentIndexedAllocator::<&str>::new(1);
-        let allocation = allocator.allocate().expect("Should succeed");
+        let allocation = allocator.allocate().unwrap();
         let (_, index) = allocation.into_raw();
         assert_eq!(allocator.allocate(), None);
         let _allocation = unsafe { Allocation::from_raw(&allocator, index) };
