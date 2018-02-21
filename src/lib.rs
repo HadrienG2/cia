@@ -212,6 +212,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use super::*;
     use testbench;
+    use testbench::race_cell::{UsizeRaceCell, Racey};
 
 
     /// Check that allocators are created in a correct state
@@ -301,7 +302,7 @@ mod tests {
     /// Run two threads in parallel, allocating data until the capacity of the
     /// allocator is exhausted. Then check if the allocation pattern was correct
     ///
-    /// This test should be run on a release build, and with --test-threads=1
+    /// This test should be run on a release build and with --test-threads=1
     /// in order to maximize concurrency (and thus odds of bug detection).
     ///
     #[test]
@@ -362,5 +363,108 @@ mod tests {
 
         // At the end, all allocator capacity should have been used up
         assert!(allocator_3.allocate().is_none());
+    }
+
+    /// Run two threads in parallel in an alloc/read/write/dealloc loop. Check
+    /// if inconsistent data or impossible allocation patterns are observed.
+    ///
+    /// This test should be run on a release build and with --test-threads=1
+    /// in order to maximize concurrency (and thus odds of bug detection).
+    ///
+    #[test]
+    #[ignore]
+    fn concurrent_access() {
+        // Each thread will go through this number of iterations
+        const ITERATIONS: usize = 30_000_000;
+
+        // In this test, we use a single-cell allocator contention to make sure
+        // that threads hit the same allocation yet play nicely with each other.
+        type TimestampAllocator = ConcurrentIndexedAllocator<UsizeRaceCell>;
+        let allocator_1 = Arc::new(TimestampAllocator::new(1));
+        let allocator_2 = allocator_1.clone();
+        let allocator_3 = allocator_1.clone();
+
+        // The allocator's single cell holds a timestamp counter. On each
+        // iteration, a thread reads the counter, increments it, stores the new
+        // timestamp in the cell, then liberates it. Each thread also keeps a
+        // record of which timestamp values it has seen in this process.
+        let local_timestamps_1 = vec![false; ITERATIONS].into_boxed_slice();
+        let local_timestamps_2 = local_timestamps_1.clone();
+
+        // Once all iterations have been executed, the threads synchronize to
+        // check if each timestamp value has been seen once and only once.
+        let global_timestamps_1 = Arc::new(Mutex::new(None));
+        let global_timestamps_2 = global_timestamps_1.clone();
+
+        // Here is what each thread will do
+        fn worker(allocator: Arc<TimestampAllocator>,
+                  mut local_timestamps: Box<[bool]>,
+                  global_timestamps: Arc<Mutex<Option<Box<[bool]>>>>)
+        {
+            // Iterate until the maximal timestamp is reached
+            let mut num_allocations = 0usize;
+            loop {
+                // Try to get access to the allocator's single cell
+                if let Some(allocation) = allocator.allocate() {
+                    // Extract the current timestamp
+                    let timestamp = match allocation.get() {
+                        // Allocator cell should be seen in a consistent state
+                        Racey::Inconsistent => {
+                            panic!("Inconsistent allocator state observed");
+                        },
+
+                        // Record the timestamps that are observed
+                        Racey::Consistent(timestamp) => timestamp,
+                    };
+
+                    // Exit the loop when the maximal timestamp is observed
+                    if timestamp == ITERATIONS { break; }
+
+                    // Record which timestamps were observed by this thread, and
+                    // make sure that a given timestamp is never observed twice.
+                    assert!(
+                        !mem::replace(&mut local_timestamps[timestamp], true)
+                    );
+
+                    // Increment the timestamp counter and liberate the cell
+                    allocation.set(timestamp + 1);
+
+                    // Record the amount of successful allocation
+                    num_allocations += 1;
+                }
+            }
+
+            // The test did not work properly if one single thread did most of
+            // the allocations: we wanted concurrent allocator access!
+            assert!(num_allocations > ITERATIONS/4);
+
+            // At the end, threads race for the global timestamp store...
+            let mut timestamps_option = global_timestamps.lock().unwrap();
+            if timestamps_option.is_none() {
+                // The one that gets there first imposes its world view of
+                // observed timestamps to the other thread...
+                *timestamps_option = Some(local_timestamps);
+            } else if let Some(ref timestamps) = *timestamps_option {
+                // ...which must check that overall, each possible timestamp
+                // was observed exactly once, by one thread or the other
+                for (local, global) in local_timestamps.iter()
+                                                       .zip(timestamps.iter()) {
+                    assert!(local ^ global);
+                }
+            }
+        }
+
+        // Run both threads to completion
+        testbench::concurrent_test_2(move || worker(allocator_1,
+                                                    local_timestamps_1,
+                                                    global_timestamps_1),
+                                     move || worker(allocator_2,
+                                                    local_timestamps_2,
+                                                    global_timestamps_2));
+
+        // At the end, the cell should be available and follow expectations
+        let timestamp_cell = allocator_3.allocate();
+        let cell_contents = timestamp_cell.expect("Cell should be available");
+        assert_eq!(cell_contents.get(), Racey::Consistent(ITERATIONS));
     }
 }
