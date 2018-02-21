@@ -326,7 +326,8 @@ mod tests {
         // Here is what each thread will do
         fn worker(allocator: Arc<BoolAllocator>,
                   mut local_indices: Box<[bool]>,
-                  global_indices: Arc<Mutex<Option<Box<[bool]>>>>) {
+                  global_indices: Arc<Mutex<Option<Box<[bool]>>>>)
+        {
             // As long as allocation succeeeds, record the allocated indices.
             // Make sure that no index appears twice: it means that a certain
             // piece of data was allocated twice to a thread, which is wrong.
