@@ -316,7 +316,7 @@ mod tests {
         let allocator_3 = allocator_1.clone();
 
         // Each thread will track the index of the allocations that it received
-        let local_indices_1 = vec![false; CAPACITY].into_boxed_slice();
+        let local_indices_1 = new_boxed_slice(|| false, CAPACITY);
         let local_indices_2 = local_indices_1.clone();
 
         // Once the allocator's capacity has been used up, threads will collect
@@ -388,7 +388,7 @@ mod tests {
         // iteration, a thread reads the counter, increments it, stores the new
         // timestamp in the cell, then liberates it. Each thread also keeps a
         // record of which timestamp values it has seen in this process.
-        let local_timestamps_1 = vec![false; ITERATIONS].into_boxed_slice();
+        let local_timestamps_1 = new_boxed_slice(|| false, ITERATIONS);
         let local_timestamps_2 = local_timestamps_1.clone();
 
         // Once all iterations have been executed, the threads synchronize to
