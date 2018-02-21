@@ -54,7 +54,6 @@ extern crate testbench;
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::mem;
-use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
@@ -176,17 +175,6 @@ impl<'a, T> Drop for Allocation<'a, T> {
     }
 }
 
-// Two allocations are equal if they originate from the same allocator and
-// target the same index. As allocations model owned values, this should never
-// happen, and indicates a bug in the allocator.
-impl<'a, T> PartialEq for Allocation<'a, T> {
-    fn eq(&self, other: &Self) -> bool {
-        ptr::eq(self.allocator, other.allocator) && (self.index == other.index)
-    }
-}
-//
-impl<'a, T> Eq for Allocation<'a, T> {}
-
 impl<'a, T> Allocation<'a, T> {
     /// The ability to extract the index of the allocation is a critical part of
     /// this abstraction. It is what allows an allocation to be used in
@@ -195,15 +183,15 @@ impl<'a, T> Allocation<'a, T> {
     /// However, this is a lossy operation. Converting to an allocator + index
     /// is safe to do, as it's just exposing information to the outside world...
     ///
-    pub fn into_raw(self) -> (&'a ConcurrentIndexedAllocator<T>, usize) {
-        let result = (self.allocator, self.index);
+    pub fn into_raw(self) -> usize {
+        let result = self.index;
         mem::forget(self);
         result
     }
 
     /// ...but going back to the Allocation abstraction after that is unsafe,
     /// because we have no way to check that the (allocator, index) pair which
-    /// you give back is the same that you received from us, and that you do not
+    /// you give back is consistent with what you received, and that you do not
     /// sneakily attempt to create multiple Allocations from it. If you do this,
     /// the program will head straight into undefined behaviour territory.
     ///
@@ -220,7 +208,7 @@ impl<'a, T> Allocation<'a, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::ManuallyDrop;
+    use std::ptr;
     use std::sync::{Arc, Mutex};
     use super::*;
     use testbench;
@@ -235,9 +223,9 @@ mod tests {
         assert_eq!(allocator.data.len(), 42);
     }
 
-    /// Check that basic allocation and Allocation comparison works
+    /// Check that basic allocation works
     #[test]
-    fn allocation_eq() {
+    fn basic_allocation() {
         // Perform two allocations and check that the results make sense
         let allocator = ConcurrentIndexedAllocator::<String>::new(2);
         let alloc1 = allocator.allocate().unwrap();
@@ -246,36 +234,36 @@ mod tests {
                 ((alloc1.index == 1) && (alloc2.index == 0)));
 
         // Check that a third allocation will fail
-        assert_eq!(allocator.allocate(), None);
-
-        // Check the Allocation equality operator. This involves the dangerous
-        // creation of a duplicate allocation, which should never be used and
-        // whose destructor should never be run, as it violates the type's basic
-        // assumptions and can easily cause various undefined behaviour.
-        let alloc1bis = ManuallyDrop::new(
-            unsafe {
-                Allocation::from_raw(&allocator, alloc1.index)
-            }
-        );
-        assert_eq!(alloc1, alloc1);
-        assert_eq!(alloc1, *alloc1bis);
-        assert!(alloc1 != alloc2);
+        assert!(allocator.allocate().is_none());
     }
 
     /// Do more extensive check of allocation in the sequential case
     #[test]
-    fn allocate() {
+    fn more_allocations() {
         const CAPACITY: usize = 15;
         let allocator = ConcurrentIndexedAllocator::<f64>::new(CAPACITY);
         let mut allocations = Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
+            // Request an allocation (should succeed)
             let allocation = allocator.allocate().unwrap();
+
+            // Check that the allocator field is correct
             assert!(ptr::eq(&allocator, allocation.allocator));
+
+            // Check that the index makes sense and has not been seen before
             assert!(allocation.index < CAPACITY);
-            assert!(!allocations.contains(&allocation));
-            allocations.push(allocation);
+            assert!(!allocations.contains(&allocation.index));
+
+            // Extract index with into_raw(), check that it works
+            let (index1, index2) = (allocation.index, allocation.into_raw());
+            assert_eq!(index1, index2);
+
+            // Record the index of the new allocation
+            allocations.push(index2);
         }
-        assert_eq!(allocator.allocate(), None);
+
+        // At the end, the allocator should have no capacity left
+        assert!(allocator.allocate().is_none());
     }
 
     /// Check that we can read and write to an allocation
@@ -293,7 +281,7 @@ mod tests {
         let allocator = ConcurrentIndexedAllocator::<isize>::new(1);
         {
             let _allocation = allocator.allocate().unwrap();
-            assert_eq!(allocator.allocate(), None);
+            assert!(allocator.allocate().is_none());
         }
         assert!(allocator.allocate().is_some());
     }
@@ -304,58 +292,74 @@ mod tests {
     fn split_and_merge() {
         let allocator = ConcurrentIndexedAllocator::<&str>::new(1);
         let allocation = allocator.allocate().unwrap();
-        let (alloc, index) = allocation.into_raw();
-        assert!(ptr::eq(alloc, &allocator));
-        assert_eq!(allocator.allocate(), None);
-        let _allocation = unsafe { Allocation::from_raw(alloc, index) };
-        assert_eq!(allocator.allocate(), None);
+        let index = allocation.into_raw();
+        assert!(allocator.allocate().is_none());
+        let _allocation = unsafe { Allocation::from_raw(&allocator, index) };
+        assert!(allocator.allocate().is_none());
     }
 
     /// Run two threads in parallel, allocating data until the capacity of the
     /// allocator is exhausted. Then check if the allocation pattern was correct
+    ///
+    /// This test should be run on a release build, and with --test-threads=1
+    /// in order to maximize concurrency (and thus odds of bug detection).
+    ///
     #[test]
+    #[ignore]
     fn concurrent_alloc() {
         // We will allocate LOTS of booleans
-        const CAPACITY: usize = 40_000_000;
+        const CAPACITY: usize = 30_000_000;
         type BoolAllocator = ConcurrentIndexedAllocator<bool>;
-        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
-        let allocator2 = allocator.clone();
-        let allocator3 = allocator.clone();
+        let allocator_1 = Arc::new(BoolAllocator::new(CAPACITY));
+        let allocator_2 = allocator_1.clone();
+        let allocator_3 = allocator_1.clone();
 
-        // We will then later collect the index of the resulting allocations
-        // into shared storage for analysis
-        let indices = Arc::new(Mutex::new(vec![false; CAPACITY]));
-        let indices2 = indices.clone();
-        let indices3 = indices.clone();
+        // Each thread will track the index of the allocations that it received
+        let local_indices_1 = vec![false; CAPACITY].into_boxed_slice();
+        let local_indices_2 = local_indices_1.clone();
+
+        // Once the allocator's capacity has been used up, threads will collect
+        // and check a global view of which indices were observed overall.
+        let global_indices_1 = Arc::new(Mutex::new(None));
+        let global_indices_2 = global_indices_1.clone();
 
         // Here is what each thread will do
         fn worker(allocator: Arc<BoolAllocator>,
-                  indices: Arc<Mutex<Vec<bool>>>) {
-            // Allocate local storage for indices
-            let mut local_indices = Vec::with_capacity(CAPACITY/2);
-
-            // As long as allocation succeeeds, record the allocated index
+                  mut local_indices: Box<[bool]>,
+                  global_indices: Arc<Mutex<Option<Box<[bool]>>>>) {
+            // As long as allocation succeeeds, record the allocated indices.
+            // Make sure that no index appears twice: it means that a certain
+            // piece of data was allocated twice to a thread, which is wrong.
             while let Some(allocation) = allocator.allocate() {
-                let (_, index) = allocation.into_raw();
-                local_indices.push(index);
+                let index = allocation.into_raw();
+                assert!(!mem::replace(&mut local_indices[index], true));
             }
 
-            // At the end, check that the observed indices were never observed
-            // before globally, and collect them for the other thread
-            let mut global_indices = indices.lock().unwrap();
-            for index in local_indices {
-                assert!(!mem::replace(&mut global_indices[index], true));
+            // At the end, threads race for the global index store...
+            let mut indices_option = global_indices.lock().unwrap();
+            if indices_option.is_none() {
+                // The one that gets there first imposes its world view of index
+                // allocations to the other thread...
+                *indices_option = Some(local_indices);
+            } else if let Some(ref indices) = *indices_option {
+                // ...which must check that overall, each available storage
+                // index was allocated exactly once
+                for (local, global) in local_indices.iter()
+                                                    .zip(indices.iter()) {
+                    assert!(local ^ global);
+                }
             }
         }
 
         // Run both threads to completion
-        testbench::concurrent_test_2(move || worker(allocator, indices),
-                                     move || worker(allocator2, indices2));
+        testbench::concurrent_test_2(move || worker(allocator_1,
+                                                    local_indices_1,
+                                                    global_indices_1),
+                                     move || worker(allocator_2,
+                                                    local_indices_2,
+                                                    global_indices_2));
 
-        // At the end, allocation should fail...
-        assert_eq!(allocator3.allocate(), None);
-
-        // ...and CAPACITY distinct indices should have been recorded
-        assert!(indices3.lock().unwrap().iter().all(|&b| b));
+        // At the end, all allocator capacity should have been used up
+        assert!(allocator_3.allocate().is_none());
     }
 }
