@@ -83,7 +83,7 @@ pub struct ConcurrentIndexedAllocator<T> {
     /// Value must be wrapped around modulo data.len() to make any sense.
     next_index: AtomicUsize,
 }
-
+//
 impl<T: Default> ConcurrentIndexedAllocator<T> {
     /// Constructor for default-constructible types
     pub fn new(size: usize) -> Self {
@@ -94,7 +94,7 @@ impl<T: Default> ConcurrentIndexedAllocator<T> {
         }
     }
 }
-
+//
 impl<T> ConcurrentIndexedAllocator<T> {
     /// Attempt to allocate a new indexed data block. The data block is provided
     /// to you in the state where the last client left it: you can only assume
@@ -138,7 +138,7 @@ impl<T> ConcurrentIndexedAllocator<T> {
         self.in_use[index].store(false, Ordering::Release);
     }
 }
-
+//
 unsafe impl<T> Sync for ConcurrentIndexedAllocator<T> {}
 
 
@@ -151,7 +151,7 @@ pub struct Allocation<'a, T: 'a> {
     /// Index of the data within the allocator
     index: usize,
 }
-
+//
 // Data can be accessed via the usual Deref/DerefMut smart pointer interface...
 impl<'a, T> Deref for Allocation<'a, T> {
     type Target = T;
@@ -166,7 +166,7 @@ impl<'a, T> DerefMut for Allocation<'a, T> {
         unsafe { self.allocator.get_mut(self.index) }
     }
 }
-
+//
 // ...and will be automatically liberated on drop in the usual RAII way.
 impl<'a, T> Drop for Allocation<'a, T> {
     fn drop(&mut self) {
@@ -174,7 +174,7 @@ impl<'a, T> Drop for Allocation<'a, T> {
         unsafe { self.allocator.deallocate(self.index) };
     }
 }
-
+//
 impl<'a, T> Allocation<'a, T> {
     /// The ability to extract the index of the allocation is a critical part of
     /// this abstraction. It is what allows an allocation to be used in
