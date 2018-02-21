@@ -220,7 +220,6 @@ impl<'a, T> Allocation<'a, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::mem::ManuallyDrop;
     use std::sync::{Arc, Mutex};
     use super::*;
@@ -323,15 +322,15 @@ mod tests {
         let allocator2 = allocator.clone();
         let allocator3 = allocator.clone();
 
-        // We will then later collect the index of the allocations into shared
-        // storage for analysis
-        let indices = Arc::new(Mutex::new(HashSet::with_capacity(CAPACITY)));
+        // We will then later collect the index of the resulting allocations
+        // into shared storage for analysis
+        let indices = Arc::new(Mutex::new(vec![false; CAPACITY]));
         let indices2 = indices.clone();
         let indices3 = indices.clone();
 
         // Here is what each thread will do
         fn worker(allocator: Arc<BoolAllocator>,
-                  indices: Arc<Mutex<HashSet<usize>>>) {
+                  indices: Arc<Mutex<Vec<bool>>>) {
             // Allocate local storage for indices
             let mut local_indices = Vec::with_capacity(CAPACITY/2);
 
@@ -345,7 +344,7 @@ mod tests {
             // before globally, and collect them for the other thread
             let mut global_indices = indices.lock().unwrap();
             for index in local_indices {
-                assert!(global_indices.insert(index));
+                assert!(!mem::replace(&mut global_indices[index], true));
             }
         }
 
@@ -357,6 +356,6 @@ mod tests {
         assert_eq!(allocator3.allocate(), None);
 
         // ...and CAPACITY distinct indices should have been recorded
-        assert_eq!(indices3.lock().unwrap().len(), CAPACITY);
+        assert!(indices3.lock().unwrap().iter().all(|&b| b));
     }
 }
