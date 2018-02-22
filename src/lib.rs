@@ -491,6 +491,9 @@ mod benchmarks {
     use super::*;
     use testbench;
 
+    /// We'll benchmark the worst case: an allocator of tiny booleans
+    type BoolAllocator = ConcurrentIndexedAllocator<bool>;
+
     /// Benchmark of (sequential) allocation performance
     #[test]
     #[ignore]
@@ -498,7 +501,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
+        let allocator = BoolAllocator::new(CAPACITY);
 
         // Perform the allocations, leaking them after the fact
         testbench::benchmark(ITERATIONS, || {
@@ -518,7 +521,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
+        let allocator = BoolAllocator::new(CAPACITY);
 
         // Perform the allocations, dropping them after the fact
         testbench::benchmark(ITERATIONS, || {
@@ -537,7 +540,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
+        let allocator = BoolAllocator::new(CAPACITY);
 
         // Perform the allocations, read the data, and leak
         testbench::benchmark(ITERATIONS, || {
@@ -557,7 +560,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
+        let allocator = BoolAllocator::new(CAPACITY);
 
         // Perform the allocations, read the data, modify it, and leak
         testbench::benchmark(ITERATIONS, || {
@@ -578,9 +581,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 100_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
-        let allocator = Arc::new(
-            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
-        );
+        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
         // Perform leaking allocations concurrently
@@ -600,9 +601,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 100_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
-        let allocator = Arc::new(
-            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
-        );
+        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
         // Perform allocations and liberations concurrently
@@ -621,9 +620,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 100_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
-        let allocator = Arc::new(
-            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
-        );
+        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
         // Perform leaking allocations concurrently
@@ -645,9 +642,7 @@ mod benchmarks {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 100_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
-        let allocator = Arc::new(
-            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
-        );
+        let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
         // Perform leaking allocations concurrently
