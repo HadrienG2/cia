@@ -487,6 +487,7 @@ mod tests {
 #[cfg(test)]
 mod benchmarks {
     use std::mem;
+    use std::sync::Arc;
     use super::*;
     use testbench;
 
@@ -495,14 +496,14 @@ mod benchmarks {
     #[ignore]
     fn alloc() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS_32: u32 = 150_000_000;
-        const ITERATIONS: usize = ITERATIONS_32 as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
 
         // Perform the allocations, leaking them after the fact
-        testbench::benchmark(ITERATIONS_32, || {
+        testbench::benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
-            assert!(allocation.index < ITERATIONS);
+            assert!(allocation.index < CAPACITY);
             mem::forget(allocation);
         });
 
@@ -515,14 +516,14 @@ mod benchmarks {
     #[ignore]
     fn alloc_free() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS_32: u32 = 150_000_000;
-        const ITERATIONS: usize = ITERATIONS_32 as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
 
         // Perform the allocations, dropping them after the fact
-        testbench::benchmark(ITERATIONS_32, || {
+        testbench::benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
-            assert!(allocation.index < ITERATIONS);
+            assert!(allocation.index < CAPACITY);
             mem::drop(allocation);
         });
 
@@ -535,12 +536,12 @@ mod benchmarks {
     #[ignore]
     fn alloc_read() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS_32: u32 = 150_000_000;
-        const ITERATIONS: usize = ITERATIONS_32 as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
 
         // Perform the allocations, read the data, and leak
-        testbench::benchmark(ITERATIONS_32, || {
+        testbench::benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
             mem::forget(allocation);
@@ -555,12 +556,12 @@ mod benchmarks {
     #[ignore]
     fn alloc_read_write() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS_32: u32 = 150_000_000;
-        const ITERATIONS: usize = ITERATIONS_32 as usize;
-        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(CAPACITY);
 
         // Perform the allocations, read the data, modify it, and leak
-        testbench::benchmark(ITERATIONS_32, || {
+        testbench::benchmark(ITERATIONS, || {
             let mut allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
             *allocation = true;
@@ -569,5 +570,27 @@ mod benchmarks {
 
         // Storage should be full at the end
         assert!(allocator.allocate().is_none());
+    }
+
+    /// Benchmark of parallel allocation performance
+    #[test]
+    #[ignore]
+    fn concurrent_alloc() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS: u32 = 30_000_000;
+        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        let allocator = Arc::new(
+            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
+        );
+        let allocator2 = allocator.clone();
+
+        // Perform leaking allocations concurrently
+        testbench::concurrent_benchmark(ITERATIONS, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index < CAPACITY);
+            mem::forget(allocation);
+        }, move || {
+            mem::forget(allocator2.allocate().unwrap());
+        });
     }
 }
