@@ -122,18 +122,21 @@ impl<T> ConcurrentIndexedAllocator<T> {
 
     /// Access indexed data. This is unsafe because using the wrong index can
     /// cause a data race with another thread concurrently accessing that index
+    #[inline]
     unsafe fn get(&self, index: usize) -> &T {
         & *self.data[index].get()
     }
 
     /// Mutably access indexed data. This is unsafe for the same reason that
     /// the get() method is: badly used, it will cause a data race.
+    #[inline]
     unsafe fn get_mut(&self, index: usize) -> &mut T {
         &mut *self.data[index].get()
     }
 
     /// Deallocating by index is unsafe, because it can cause a data race if the
     /// wrong data block is accidentally liberated.
+    #[inline]
     unsafe fn deallocate(&self, index: usize) {
         self.in_use[index].store(false, Ordering::Release);
     }
@@ -466,5 +469,105 @@ mod tests {
         let timestamp_cell = allocator_3.allocate();
         let cell_contents = timestamp_cell.expect("Cell should be available");
         assert_eq!(cell_contents.get(), Racey::Consistent(ITERATIONS));
+    }
+}
+
+
+/// Performance benchmarks
+///
+/// These benchmarks masquerading as tests are a stopgap solution until
+/// benchmarking lands in Stable Rust. They should be compiled in release mode,
+/// and run with only one OS thread. In addition, the default behaviour of
+/// swallowing test output should obviously be suppressed.
+///
+/// TL;DR: cargo test --release -- --ignored --nocapture --test-threads=1
+///
+/// TODO: Switch to standard Rust benchmarks once they are stable
+///
+#[cfg(test)]
+mod benchmarks {
+    use std::mem;
+    use super::*;
+    use testbench;
+
+    /// Benchmark of (sequential) allocation performance
+    #[test]
+    #[ignore]
+    fn alloc() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS_32: u32 = 150_000_000;
+        const ITERATIONS: usize = ITERATIONS_32 as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+
+        // Perform the allocations, leaking them after the fact
+        testbench::benchmark(ITERATIONS_32, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index < ITERATIONS);
+            mem::forget(allocation);
+        });
+
+        // Storage should be full at the end
+        assert!(allocator.allocate().is_none());
+    }
+
+    /// Benchmark of (sequential) allocation + liberation performance
+    #[test]
+    #[ignore]
+    fn alloc_free() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS_32: u32 = 150_000_000;
+        const ITERATIONS: usize = ITERATIONS_32 as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+
+        // Perform the allocations, dropping them after the fact
+        testbench::benchmark(ITERATIONS_32, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index < ITERATIONS);
+            mem::drop(allocation);
+        });
+
+        // There should be some storage left at the end
+        assert!(allocator.allocate().is_some());
+    }
+
+    /// Benchmark of (sequential) allocation + data readout performance
+    #[test]
+    #[ignore]
+    fn alloc_read() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS_32: u32 = 150_000_000;
+        const ITERATIONS: usize = ITERATIONS_32 as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+
+        // Perform the allocations, read the data, and leak
+        testbench::benchmark(ITERATIONS_32, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(*allocation == false);
+            mem::forget(allocation);
+        });
+
+        // Storage should be full at the end
+        assert!(allocator.allocate().is_none());
+    }
+
+    /// Benchmark of (sequential) allocation + data read/write performance
+    #[test]
+    #[ignore]
+    fn alloc_read_write() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS_32: u32 = 150_000_000;
+        const ITERATIONS: usize = ITERATIONS_32 as usize;
+        let allocator = ConcurrentIndexedAllocator::<bool>::new(ITERATIONS);
+
+        // Perform the allocations, read the data, modify it, and leak
+        testbench::benchmark(ITERATIONS_32, || {
+            let mut allocation = allocator.allocate().unwrap();
+            assert!(*allocation == false);
+            *allocation = true;
+            mem::forget(allocation);
+        });
+
+        // Storage should be full at the end
+        assert!(allocator.allocate().is_none());
     }
 }
