@@ -439,7 +439,7 @@ mod tests {
 
             // The test did not work properly if one single thread did most of
             // the allocations: we wanted concurrent allocator access!
-            assert!(num_allocations > ITERATIONS/4);
+            assert!(num_allocations > ITERATIONS/10);
 
             // At the end, threads race for the global timestamp store...
             let mut timestamps_option = global_timestamps.lock().unwrap();
@@ -524,7 +524,6 @@ mod benchmarks {
         testbench::benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
             assert!(allocation.index < CAPACITY);
-            mem::drop(allocation);
         });
 
         // There should be some storage left at the end
@@ -577,7 +576,7 @@ mod benchmarks {
     #[ignore]
     fn concurrent_alloc() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS: u32 = 30_000_000;
+        const ITERATIONS: u32 = 100_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
         let allocator = Arc::new(
             ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
@@ -591,6 +590,27 @@ mod benchmarks {
             mem::forget(allocation);
         }, move || {
             mem::forget(allocator2.allocate().unwrap());
+        });
+    }
+
+    /// Benchmark of parallel allocation + liberation performance
+    #[test]
+    #[ignore]
+    fn concurrent_alloc_free() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS: u32 = 100_000_000;
+        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        let allocator = Arc::new(
+            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
+        );
+        let allocator2 = allocator.clone();
+
+        // Perform allocations and liberations concurrently
+        testbench::concurrent_benchmark(ITERATIONS, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index < CAPACITY);
+        }, move || {
+            allocator2.allocate().unwrap();
         });
     }
 }
