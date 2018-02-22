@@ -509,9 +509,6 @@ mod benchmarks {
             assert!(allocation.index < CAPACITY);
             mem::forget(allocation);
         });
-
-        // Storage should be full at the end
-        assert!(allocator.allocate().is_none());
     }
 
     /// Benchmark of (sequential) allocation + liberation performance
@@ -528,15 +525,12 @@ mod benchmarks {
             let allocation = allocator.allocate().unwrap();
             assert!(allocation.index < CAPACITY);
         });
-
-        // There should be some storage left at the end
-        assert!(allocator.allocate().is_some());
     }
 
     /// Benchmark of (sequential) allocation + data readout performance
     #[test]
     #[ignore]
-    fn alloc_read() {
+    fn alloc_read_free() {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
@@ -546,17 +540,13 @@ mod benchmarks {
         testbench::benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
-            mem::forget(allocation);
         });
-
-        // Storage should be full at the end
-        assert!(allocator.allocate().is_none());
     }
 
     /// Benchmark of (sequential) allocation + data read/write performance
     #[test]
     #[ignore]
-    fn alloc_read_write() {
+    fn alloc_read_write_free() {
         // Get ready to allocate a lot of stuff
         const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = ITERATIONS as usize;
@@ -567,11 +557,7 @@ mod benchmarks {
             let mut allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
             *allocation = true;
-            mem::forget(allocation);
         });
-
-        // Storage should be full at the end
-        assert!(allocator.allocate().is_none());
     }
 
     /// Benchmark of parallel allocation performance
@@ -579,7 +565,7 @@ mod benchmarks {
     #[ignore]
     fn concurrent_alloc() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS: u32 = 100_000_000;
+        const ITERATIONS: u32 = 150_000_000;
         const CAPACITY: usize = 10 * (ITERATIONS as usize);
         let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
@@ -599,8 +585,8 @@ mod benchmarks {
     #[ignore]
     fn concurrent_alloc_free() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS: u32 = 100_000_000;
-        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
         let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
@@ -616,10 +602,10 @@ mod benchmarks {
     /// Benchmark of parallel allocation + data readout performance
     #[test]
     #[ignore]
-    fn concurrent_alloc_read() {
+    fn concurrent_alloc_read_free() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS: u32 = 100_000_000;
-        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
         let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
@@ -627,21 +613,19 @@ mod benchmarks {
         testbench::concurrent_benchmark(ITERATIONS, || {
             let allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
-            mem::forget(allocation);
         }, move || {
             let allocation = allocator2.allocate().unwrap();
             assert!(*allocation == false);
-            mem::forget(allocation);
         });
     }
 
     /// Benchmark of parallel allocation + data read/write performance
     #[test]
     #[ignore]
-    fn concurrent_alloc_read_write() {
+    fn concurrent_alloc_read_write_free() {
         // Get ready to allocate a lot of stuff
-        const ITERATIONS: u32 = 100_000_000;
-        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        const ITERATIONS: u32 = 150_000_000;
+        const CAPACITY: usize = ITERATIONS as usize;
         let allocator = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator2 = allocator.clone();
 
@@ -649,13 +633,11 @@ mod benchmarks {
         testbench::concurrent_benchmark(ITERATIONS, || {
             let mut allocation = allocator.allocate().unwrap();
             assert!(*allocation == false);
-            *allocation = true;
-            mem::forget(allocation);
+            *allocation = allocation.index >= CAPACITY;
         }, move || {
             let mut allocation = allocator2.allocate().unwrap();
             assert!(*allocation == false);
-            *allocation = true;
-            mem::forget(allocation);
+            *allocation = allocation.index >= CAPACITY;
         });
     }
 }
