@@ -613,4 +613,54 @@ mod benchmarks {
             allocator2.allocate().unwrap();
         });
     }
+
+    /// Benchmark of parallel allocation + data readout performance
+    #[test]
+    #[ignore]
+    fn concurrent_alloc_read() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS: u32 = 100_000_000;
+        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        let allocator = Arc::new(
+            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
+        );
+        let allocator2 = allocator.clone();
+
+        // Perform leaking allocations concurrently
+        testbench::concurrent_benchmark(ITERATIONS, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(*allocation == false);
+            mem::forget(allocation);
+        }, move || {
+            let allocation = allocator2.allocate().unwrap();
+            assert!(*allocation == false);
+            mem::forget(allocation);
+        });
+    }
+
+    /// Benchmark of parallel allocation + data read/write performance
+    #[test]
+    #[ignore]
+    fn concurrent_alloc_read_write() {
+        // Get ready to allocate a lot of stuff
+        const ITERATIONS: u32 = 100_000_000;
+        const CAPACITY: usize = 10 * (ITERATIONS as usize);
+        let allocator = Arc::new(
+            ConcurrentIndexedAllocator::<bool>::new(CAPACITY)
+        );
+        let allocator2 = allocator.clone();
+
+        // Perform leaking allocations concurrently
+        testbench::concurrent_benchmark(ITERATIONS, || {
+            let mut allocation = allocator.allocate().unwrap();
+            assert!(*allocation == false);
+            *allocation = true;
+            mem::forget(allocation);
+        }, move || {
+            let mut allocation = allocator2.allocate().unwrap();
+            assert!(*allocation == false);
+            *allocation = true;
+            mem::forget(allocation);
+        });
+    }
 }
