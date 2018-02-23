@@ -494,6 +494,39 @@ mod benchmarks {
     /// We'll benchmark the worst case: an allocator of tiny booleans
     type BoolAllocator = ConcurrentIndexedAllocator<bool>;
 
+    /// Benchmark of an unrealistically optimal allocation/liberation scenario
+    #[test]
+    #[ignore]
+    fn best_case_alloc() {
+        // Get ready to allocate many times
+        const ITERATIONS: u32 = 100_000_000;
+        let allocator = BoolAllocator::new(1);
+
+        // Perform an allocation/liberation cycle
+        testbench::benchmark(ITERATIONS, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index == 0);
+        });
+    }
+
+    /// Like best_case, but with some busy cells. Allows studying their impact.
+    #[test]
+    #[ignore]
+    fn busy_cell_alloc() {
+        // Get ready to allocate many times
+        const ITERATIONS: u32 = 100_000_000;
+        let allocator = BoolAllocator::new(2);
+
+        // Clog up the first cell of the allocator, to study the impact
+        mem::forget(allocator.allocate().unwrap());
+
+        // Perform an allocation/liberation cycle
+        testbench::benchmark(ITERATIONS, || {
+            let allocation = allocator.allocate().unwrap();
+            assert!(allocation.index == 1);
+        });
+    }
+
     /// Benchmark of (sequential) allocation performance
     #[test]
     #[ignore]
