@@ -1,4 +1,4 @@
-//! Concurrent Indexed Allocator (CIA)
+//! Concurrent Indexed Allocators (CIA)
 //!
 //! This crate solves a problem which does not come up every day, but which I
 //! have faced from time to time: given an array of N objects of a certain type
@@ -71,7 +71,7 @@ fn new_boxed_slice<F, T>(mut generator: F, size: usize) -> Box<[T]>
 
 /// This is an implementation of the concurrent indexed allocator concept
 #[derive(Debug)]
-pub struct ConcurrentIndexedAllocator<T> {
+pub struct IndexedAllocator<T> {
     /// Flags telling whether each of the data blocks is in use
     in_use: Box<[AtomicBool]>,
 
@@ -84,7 +84,7 @@ pub struct ConcurrentIndexedAllocator<T> {
     next_index: AtomicUsize,
 }
 //
-impl<T: Default> ConcurrentIndexedAllocator<T> {
+impl<T: Default> IndexedAllocator<T> {
     /// Constructor for default-constructible types
     pub fn new(size: usize) -> Self {
         Self {
@@ -95,7 +95,7 @@ impl<T: Default> ConcurrentIndexedAllocator<T> {
     }
 }
 //
-impl<T> ConcurrentIndexedAllocator<T> {
+impl<T> IndexedAllocator<T> {
     /// Attempt to allocate a new indexed data block. The data block is provided
     /// to you in the state where the last client left it: you can only assume
     /// that it is a valid value of type T, and if you need more cleanup you
@@ -108,9 +108,16 @@ impl<T> ConcurrentIndexedAllocator<T> {
             // Get a suggestion of a data block to try out next
             let index = self.next_index.fetch_add(1, Ordering::Relaxed) % size;
 
-            // If that data block is free, reserve it and return it. Need an
-            // Acquire memory barrier for the data to be consistent when
-            // receiving a concurrently deallocated data block.
+            // If that data block is free, reserve it and return it. An Acquire
+            // memory barrier is needed to make sure that the current thread
+            // gets a consistent view of the freshly allocated block's contents.
+            //
+            // Assuming that the allocator is well-dimensioned and the overall
+            // allocation pattern meets our FIFO expectations, this will succeed
+            // most of the time. So the usual failure case optimizations that
+            // pre-check the flag before swapping it or that delay the Acquire
+            // barrier until success is confirmed are unlikely to be worthwhile.
+            //
             if self.in_use[index].swap(true, Ordering::Acquire) == false {
                 return Some(Allocation { allocator: self, index });
             }
@@ -138,18 +145,20 @@ impl<T> ConcurrentIndexedAllocator<T> {
     /// wrong data block is accidentally liberated.
     #[inline]
     unsafe fn deallocate(&self, index: usize) {
+        // A Release memory barrier is needed to make sure that the next thread
+        // which allocates this memory location will see consistent data in it.
         self.in_use[index].store(false, Ordering::Release);
     }
 }
 //
-unsafe impl<T> Sync for ConcurrentIndexedAllocator<T> {}
+unsafe impl<T> Sync for IndexedAllocator<T> {}
 
 
 /// Proxy object representing a successfully allocated data block
 #[derive(Debug)]
 pub struct Allocation<'a, T: 'a> {
     /// Allocator which we got the data from
-    allocator: &'a ConcurrentIndexedAllocator<T>,
+    allocator: &'a IndexedAllocator<T>,
 
     /// Index of the data within the allocator
     index: usize,
@@ -198,7 +207,7 @@ impl<'a, T> Allocation<'a, T> {
     /// sneakily attempt to create multiple Allocations from it. If you do this,
     /// the program will head straight into undefined behaviour territory.
     ///
-    pub unsafe fn from_raw(allocator: &'a ConcurrentIndexedAllocator<T>,
+    pub unsafe fn from_raw(allocator: &'a IndexedAllocator<T>,
                            index: usize) -> Self {
         Self {
             allocator,
@@ -221,7 +230,7 @@ mod tests {
     /// Check that allocators are created in a correct state
     #[test]
     fn new() {
-        let allocator = ConcurrentIndexedAllocator::<u8>::new(42);
+        let allocator = IndexedAllocator::<u8>::new(42);
         assert_eq!(allocator.in_use.len(), 42);
         assert!(allocator.in_use.iter().all(|b| !b.load(Ordering::Relaxed)));
         assert_eq!(allocator.data.len(), 42);
@@ -231,7 +240,7 @@ mod tests {
     #[test]
     fn basic_allocation() {
         // Perform two allocations and check that the results make sense
-        let allocator = ConcurrentIndexedAllocator::<String>::new(2);
+        let allocator = IndexedAllocator::<String>::new(2);
         let alloc1 = allocator.allocate().unwrap();
         let alloc2 = allocator.allocate().unwrap();
         assert!(((alloc1.index == 0) && (alloc2.index == 1)) ||
@@ -245,7 +254,7 @@ mod tests {
     #[test]
     fn more_allocations() {
         const CAPACITY: usize = 15;
-        let allocator = ConcurrentIndexedAllocator::<f64>::new(CAPACITY);
+        let allocator = IndexedAllocator::<f64>::new(CAPACITY);
         let mut allocations = Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
             // Request an allocation (should succeed)
@@ -273,7 +282,7 @@ mod tests {
     /// Check that we can read and write to an allocation
     #[test]
     fn read_write() {
-        let allocator = ConcurrentIndexedAllocator::<char>::new(1);
+        let allocator = IndexedAllocator::<char>::new(1);
         let mut allocation = allocator.allocate().unwrap();
         *allocation = '@';
         assert_eq!(*allocation, '@');
@@ -282,7 +291,7 @@ mod tests {
     /// Check that we can deallocate data by dropping the Allocation
     #[test]
     fn deallocate() {
-        let allocator = ConcurrentIndexedAllocator::<isize>::new(1);
+        let allocator = IndexedAllocator::<isize>::new(1);
         {
             let _allocation = allocator.allocate().unwrap();
             assert!(allocator.allocate().is_none());
@@ -294,7 +303,7 @@ mod tests {
     /// without it being freed by the allocator.
     #[test]
     fn split_and_merge() {
-        let allocator = ConcurrentIndexedAllocator::<&str>::new(1);
+        let allocator = IndexedAllocator::<&str>::new(1);
         let allocation = allocator.allocate().unwrap();
         let index = allocation.into_raw();
         assert!(allocator.allocate().is_none());
@@ -313,7 +322,7 @@ mod tests {
     fn concurrent_alloc() {
         // We will allocate LOTS of booleans
         const CAPACITY: usize = 30_000_000;
-        type BoolAllocator = ConcurrentIndexedAllocator<bool>;
+        type BoolAllocator = IndexedAllocator<bool>;
         let allocator_1 = Arc::new(BoolAllocator::new(CAPACITY));
         let allocator_2 = allocator_1.clone();
         let allocator_3 = allocator_1.clone();
@@ -382,7 +391,7 @@ mod tests {
 
         // In this test, we use a single-cell allocator contention to make sure
         // that threads hit the same allocation yet play nicely with each other.
-        type TimestampAllocator = ConcurrentIndexedAllocator<UsizeRaceCell>;
+        type TimestampAllocator = IndexedAllocator<UsizeRaceCell>;
         let allocator_1 = Arc::new(TimestampAllocator::new(1));
         let allocator_2 = allocator_1.clone();
         let allocator_3 = allocator_1.clone();
@@ -492,7 +501,7 @@ mod benchmarks {
     use testbench;
 
     /// We'll benchmark the worst case: an allocator of tiny booleans
-    type BoolAllocator = ConcurrentIndexedAllocator<bool>;
+    type BoolAllocator = IndexedAllocator<bool>;
 
     /// Benchmark of an unrealistically optimal allocation/liberation scenario
     #[test]
