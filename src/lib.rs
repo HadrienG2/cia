@@ -135,14 +135,17 @@ impl<T> IndexedAllocator<T> {
     }
 
     /// Mutably access indexed data. This is unsafe for the same reason that
-    /// the get() method is: badly used, it will cause a data race.
+    /// the get() method is: badly used, it will cause a data race. In addition,
+    /// badly using this method may also result in violations of Rust's core
+    /// "no mutable aliasing" guarantee.
     #[inline]
     unsafe fn get_mut(&self, index: usize) -> &mut T {
         &mut *self.data[index].get()
     }
 
     /// Deallocating by index is unsafe, because it can cause a data race if the
-    /// wrong data block is accidentally liberated.
+    /// wrong data block is accidentally liberated or if the index is reused
+    /// after deallocation.
     #[inline]
     unsafe fn deallocate(&self, index: usize) {
         // A Release memory barrier is needed to make sure that the next thread
@@ -154,7 +157,7 @@ impl<T> IndexedAllocator<T> {
 unsafe impl<T> Sync for IndexedAllocator<T> {}
 
 
-/// Proxy object representing a successfully allocated data block
+/// Proxy object providing a safe interface to an allocated data block
 #[derive(Debug)]
 pub struct Allocation<'a, T: 'a> {
     /// Allocator which we got the data from
@@ -205,7 +208,7 @@ impl<'a, T> Allocation<'a, T> {
     /// because we have no way to check that the (allocator, index) pair which
     /// you give back is consistent with what you received, and that you do not
     /// sneakily attempt to create multiple Allocations from it. If you do this,
-    /// the program will head straight into undefined behaviour territory.
+    /// the program will head straight into undefined behaviour territory...
     ///
     pub unsafe fn from_raw(allocator: &'a IndexedAllocator<T>,
                            index: usize) -> Self {
