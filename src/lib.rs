@@ -51,146 +51,96 @@
 
 extern crate testbench;
 
-use std::cell::UnsafeCell;
+pub mod allocators;
+pub(crate) mod utilities;
+
 use std::ops::{Deref, DerefMut};
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
-/// I've wanted a utility function like this since... forever.
-fn new_boxed_slice<F, T>(mut generator: F, size: usize) -> Box<[T]>
-    where F: FnMut() -> T
-{
-    let mut acc = Vec::with_capacity(size);
-    for _ in 0..size {
-        acc.push(generator())
-    }
-    acc.into_boxed_slice()
-}
+/// An indexed allocator is a a mechanism for distributing a finite pool of
+/// objects of a certain type across multi-threaded clients, in such a fashion
+/// that each allocation may be uniquely identified by an integer index in the
+/// range 0..N where N is the capacity of the allocator.
+///
+/// Allocated data blocks are provided to you in the state where the last client
+/// left them: you can only assume that it is a valid value of type T, and if
+/// you need more cleanup you will have to do it yourself.
+///
+pub trait IndexedAllocator: Sync {
+    // Type of data being managed by the allocator
+    type Data;
 
-
-/// This is an implementation of the concurrent indexed allocator concept
-#[derive(Debug)]
-pub struct IndexedAllocator<T> {
-    /// Flags telling whether each of the data blocks is in use
-    in_use: Box<[AtomicBool]>,
-
-    /// The data blocks themselves, with matching indices
-    data: Box<[UnsafeCell<T>]>,
-
-    /// Suggestion for the client of the next data block to be tried. Must be
-    /// incremented via fetch-add on every read to remain a good suggestion.
-    /// Value must be wrapped around modulo data.len() to make any sense.
-    next_index: AtomicUsize,
-}
-//
-impl<T: Default> IndexedAllocator<T> {
-    /// Constructor for default-constructible types
-    pub fn new(size: usize) -> Self {
-        Self {
-            in_use: new_boxed_slice(|| AtomicBool::new(false), size),
-            data: new_boxed_slice(|| UnsafeCell::new(T::default()), size),
-            next_index: AtomicUsize::new(0),
-        }
-    }
-}
-//
-impl<T> IndexedAllocator<T> {
-    /// Attempt to allocate a new indexed data block. The data block is provided
-    /// to you in the state where the last client left it: you can only assume
-    /// that it is a valid value of type T, and if you need more cleanup you
-    /// will have to do it yourself.
-    pub fn allocate<'a>(&'a self) -> Option<Allocation<'a, T>> {
-        // Look for an unused data block, allowing for a full storage scan
-        // before giving up and bailing
-        let size = self.data.len();
-        for _ in 0..size {
-            // Get a suggestion of a data block to try out next
-            let index = self.next_index.fetch_add(1, Ordering::Relaxed) % size;
-
-            // If that data block is free, reserve it and return it. An Acquire
-            // memory barrier is needed to make sure that the current thread
-            // gets a consistent view of the freshly allocated block's contents.
-            //
-            // Assuming that the allocator is well-dimensioned and the overall
-            // allocation pattern meets our FIFO expectations, this will succeed
-            // most of the time. So the usual failure case optimizations that
-            // pre-check the flag before swapping it or that delay the Acquire
-            // barrier until success is confirmed are unlikely to be worthwhile.
-            //
-            if self.in_use[index].swap(true, Ordering::Acquire) == false {
-                return Some(Allocation { allocator: self, index });
-            }
-        }
-
-        // Too many failed attempts to allocate, storage is likely full
-        None
-    }
-
-    /// Access indexed data. This is unsafe because using the wrong index can
-    /// cause a data race with another thread concurrently accessing that index
+    /// Request an object from the allocator. This is the recommended high-level
+    /// API, which provides a maximally safe wrapper around the allocation.
     #[inline]
-    unsafe fn get(&self, index: usize) -> &T {
-        & *self.data[index].get()
+    fn allocate(&self) -> Option<Allocation<Self>> {
+        self.raw_allocate().map(|index| unsafe {
+            Allocation::from_raw(self, index)
+        })
     }
 
-    /// Mutably access indexed data. This is unsafe for the same reason that
-    /// the get() method is: badly used, it will cause a data race. In addition,
-    /// badly using this method may also result in violations of Rust's core
-    /// "no mutable aliasing" guarantee.
-    #[inline]
-    unsafe fn get_mut(&self, index: usize) -> &mut T {
-        &mut *self.data[index].get()
-    }
+    /// Request a raw indexed allocation, without using the safe wrapper.
+    fn raw_allocate(&self) -> Option<usize>;
 
-    /// Deallocating by index is unsafe, because it can cause a data race if the
-    /// wrong data block is accidentally liberated or if the index is reused
-    /// after deallocation.
-    #[inline]
-    unsafe fn deallocate(&self, index: usize) {
-        // A Release memory barrier is needed to make sure that the next thread
-        // which allocates this memory location will see consistent data in it.
-        self.in_use[index].store(false, Ordering::Release);
-    }
+    /// Access the content of a certain allocation. This is unsafe because there
+    /// is no safeguard against incorrect aliasing and data races. In fact, we
+    /// have no way to check that you even own this allocation...
+    unsafe fn raw_get(&self, index: usize) -> &Self::Data;
+
+    /// Mutably access the content of a certain allocation. This is unsafe
+    /// because there is no safeguard against incorrect aliasing and data races.
+    /// In fact, we have no way to check that you even own this allocation...
+    unsafe fn raw_get_mut(&self, index: usize) -> &mut Self::Data;
+
+    /// Liberate an allocation. This is unsafe because at this layer of the
+    /// interface, we have no way to ensure that you will not try to reuse the
+    /// allocation after freeing it.
+    unsafe fn raw_deallocate(&self, index: usize);
 }
-//
-unsafe impl<T> Sync for IndexedAllocator<T> {}
 
 
 /// Proxy object providing a safe interface to an allocated data block
 #[derive(Debug)]
-pub struct Allocation<'a, T: 'a> {
+pub struct Allocation<'a, Allocator: 'a + IndexedAllocator + ?Sized> {
     /// Allocator which we got the data from
-    allocator: &'a IndexedAllocator<T>,
+    allocator: &'a Allocator,
 
-    /// Index of the data within the allocator
+    /// Index identifying the data within the allocator
     index: usize,
 }
 //
 // Data can be accessed via the usual Deref/DerefMut smart pointer interface...
-impl<'a, T> Deref for Allocation<'a, T> {
-    type Target = T;
+impl<'a, Allocator> Deref for Allocation<'a, Allocator>
+    where Allocator: IndexedAllocator + ?Sized
+{
+    type Target = Allocator::Data;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.allocator.get(self.index) }
+        unsafe { self.allocator.raw_get(self.index) }
     }
 }
 //
-impl<'a, T> DerefMut for Allocation<'a, T> {
+impl<'a, Allocator> DerefMut for Allocation<'a, Allocator>
+    where Allocator: IndexedAllocator + ?Sized
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.allocator.get_mut(self.index) }
+        unsafe { self.allocator.raw_get_mut(self.index) }
     }
 }
 //
 // ...and will be automatically liberated on drop in the usual RAII way.
-impl<'a, T> Drop for Allocation<'a, T> {
+impl<'a, Allocator> Drop for Allocation<'a, Allocator>
+    where Allocator: IndexedAllocator + ?Sized
+{
     fn drop(&mut self) {
-        // This is safe because we trust that the inner index is valid
-        unsafe { self.allocator.deallocate(self.index) };
+        unsafe { self.allocator.raw_deallocate(self.index) };
     }
 }
 //
-impl<'a, T> Allocation<'a, T> {
+impl<'a, Allocator> Allocation<'a, Allocator>
+    where Allocator: IndexedAllocator + ?Sized
+{
     /// The ability to extract the index of the allocation is a critical part of
     /// this abstraction. It is what allows an allocation to be used in
     /// space-contrained scenarios, such as within the NaN bits of a float.
@@ -210,8 +160,7 @@ impl<'a, T> Allocation<'a, T> {
     /// sneakily attempt to create multiple Allocations from it. If you do this,
     /// the program will head straight into undefined behaviour territory...
     ///
-    pub unsafe fn from_raw(allocator: &'a IndexedAllocator<T>,
-                           index: usize) -> Self {
+    pub unsafe fn from_raw(allocator: &'a Allocator, index: usize) -> Self {
         Self {
             allocator,
             index
