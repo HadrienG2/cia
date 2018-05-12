@@ -476,4 +476,5 @@ mod benchmarks {
 
 
 // Implementations go here
+pub mod packed_deterministic;
 pub mod scalar_deterministic;
